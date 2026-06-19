@@ -23,6 +23,7 @@ public class ComboGroup
 	// prefer a specific recolor/version when you hold several). Empty = default order (functional item first).
 	public Map<Integer, List<Integer>> variantOrder = new HashMap<>();
 	public int icon = 0;                                 // favorite display item id (0 = use the top member)
+	public boolean hideHighlight = false;                // true = don't draw the bank overlay highlight for this combo's cell
 
 	public ComboGroup()
 	{

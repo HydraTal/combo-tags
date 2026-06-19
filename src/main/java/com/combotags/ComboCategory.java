@@ -9,6 +9,7 @@ public class ComboCategory
 	public String name = "";
 	public boolean collapsed = false;
 	public int color = ComboGroup.DEFAULT_COLOR; // group color; new combos created into this group inherit it
+	public boolean hideHighlight = false; // true = combos in this group don't draw the bank overlay highlight (inherited like color)
 
 	public ComboCategory()
 	{

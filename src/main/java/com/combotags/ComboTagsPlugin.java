@@ -134,6 +134,9 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 	private volatile Map<String, Integer> comboColorCache;
 	private volatile Map<String, Color> comboColorObjCache;
 
+	// Combo group names whose bank overlay highlight is turned off (hideHighlight), for the overlay hot path.
+	private volatile Set<String> comboHideHighlightCache;
+
 	// Cached per host tag: cell index -> combo group, so the overlay doesn't re-read config every paint.
 	private volatile Map<String, Map<Integer, String>> comboCellGroupsCache = new ConcurrentHashMap<>();
 
@@ -267,6 +270,7 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 			{
 				comboColorCache = null;
 				comboColorObjCache = null;
+				comboHideHighlightCache = null;
 				invalidateComboCellGroupsCache();
 				clientThread.invokeLater(() ->
 				{
@@ -825,6 +829,25 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 		Color color = new Color(c != null ? c : ComboGroup.DEFAULT_COLOR);
 		objCache.put(comboGroup, color);
 		return color;
+	}
+
+	/** Whether the combo group's bank overlay highlight is turned off (its cells render with no box/dot/etc.). */
+	public boolean isComboHighlightHidden(String comboGroup)
+	{
+		Set<String> hidden = comboHideHighlightCache;
+		if (hidden == null)
+		{
+			hidden = new HashSet<>();
+			for (ComboGroup g : ComboStore.all(configManager, gson))
+			{
+				if (g.hideHighlight)
+				{
+					hidden.add(g.name);
+				}
+			}
+			comboHideHighlightCache = hidden;
+		}
+		return hidden.contains(comboGroup);
 	}
 
 	// ======================================================================================================

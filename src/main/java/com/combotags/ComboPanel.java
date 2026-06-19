@@ -25,6 +25,7 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
@@ -299,6 +300,9 @@ public class ComboPanel extends PluginPanel
 			ComboStore.moveCategory(plugin.configManager, plugin.gson, cat.name, +1);
 			rebuild();
 		});
+		JMenuItem highlight = new JMenuItem(cat.hideHighlight ? "Show bank highlight" : "Hide bank highlight");
+		highlight.setToolTipText("Toggle the bank overlay box/dot/etc. for every combo in this group");
+		highlight.addActionListener(e -> toggleCategoryHighlight(cat)); // rebuilds, so the label flips
 		JMenuItem copyGroup = new JMenuItem("Copy group to clipboard");
 		copyGroup.addActionListener(e -> exportGroupToClipboard(cat.name));
 		JMenuItem delete = new JMenuItem("Delete");
@@ -312,6 +316,7 @@ public class ComboPanel extends PluginPanel
 		menu.add(up);
 		menu.add(down);
 		menu.addSeparator();
+		menu.add(highlight);
 		menu.add(copyGroup);
 		menu.addSeparator();
 		menu.add(delete);
@@ -344,9 +349,9 @@ public class ComboPanel extends PluginPanel
 
 	/**
 	 * A ⚠ badge for a category header when two or more of its combos contain the same item, or {@code null}
-	 * when there's no overlap. Such an overlap makes "Replace group in tab" ambiguous — the shared item belongs
-	 * to more than one combo cell, so the consolidation can land it on the wrong cell (often only settling after
-	 * several passes). The shared item name(s) are resolved on the client thread and folded into the tooltip.
+	 * when there's no overlap. A contested item can't belong to a single cell, so it is excluded from every
+	 * combo in the group — no cell shows, claims, or highlights it. The tooltip names the affected item(s),
+	 * resolved on the client thread.
 	 */
 	private JLabel buildCategoryConflictWarning(String categoryName, List<ComboGroup> all)
 	{
@@ -357,8 +362,8 @@ public class ComboPanel extends PluginPanel
 		}
 		JLabel warn = new JLabel("⚠");
 		warn.setForeground(WARNING_COLOR);
-		warn.setToolTipText("<html>Two combos in this group share an item — <b>Replace group in tab</b> may"
-			+ "<br>behave unexpectedly (the shared item belongs to more than one combo cell).</html>");
+		warn.setToolTipText("<html>Two combos in this group share an item, so it is <b>not assigned to any"
+			+ "<br>combo cell</b> (no cell will show, claim, or highlight it).</html>");
 		// Enrich the tooltip with the actual item name(s); getItemComposition must run on the client thread.
 		plugin.clientThread.invokeLater(() -> {
 			StringBuilder names = new StringBuilder();
@@ -370,9 +375,9 @@ public class ComboPanel extends PluginPanel
 				}
 				names.append(plugin.itemManager.getItemComposition(base).getName());
 			}
-			String tip = "<html><b>Shared item(s):</b> " + htmlEscape(names.toString())
-				+ "<br>Two combos in this group contain the same item, so <b>Replace group in tab</b>"
-				+ "<br>may behave unexpectedly (the item belongs to more than one combo cell).</html>";
+			String tip = "<html><b>Not assigned (shared by multiple combos):</b> " + htmlEscape(names.toString())
+				+ "<br>These items appear in more than one combo in this group, so no combo cell"
+				+ "<br>will show, claim, or highlight them. Keep an item in just one combo to use it.</html>";
 			SwingUtilities.invokeLater(() -> warn.setToolTipText(tip));
 		});
 		return warn;
@@ -407,6 +412,30 @@ public class ComboPanel extends PluginPanel
 			}
 		}
 		return shared;
+	}
+
+	/** Toggles the bank highlight for a whole group, cascading the flag to every combo filed under it. */
+	private void toggleCategoryHighlight(ComboCategory cat)
+	{
+		boolean hide = !cat.hideHighlight;
+		cat.hideHighlight = hide;
+		ComboStore.upsertCategory(plugin.configManager, plugin.gson, cat);
+		// Apply to every member in one parse + one save (mirrors pickCategoryColor's cascade).
+		List<ComboGroup> all = ComboStore.all(plugin.configManager, plugin.gson);
+		boolean changed = false;
+		for (ComboGroup g : all)
+		{
+			if (cat.name.equals(g.category) && g.hideHighlight != hide)
+			{
+				g.hideHighlight = hide;
+				changed = true;
+			}
+		}
+		if (changed)
+		{
+			ComboStore.save(plugin.configManager, plugin.gson, all);
+		}
+		rebuild();
 	}
 
 	private void pickCategoryColor(ComboCategory cat, Component anchor)
@@ -508,6 +537,7 @@ public class ComboPanel extends PluginPanel
 			{
 				g.category = cat.name;
 				g.color = cat.color; // inherit the group's color on creation
+				g.hideHighlight = cat.hideHighlight; // and its highlight on/off state
 			}
 		}
 		save(g);
@@ -856,6 +886,8 @@ public class ComboPanel extends PluginPanel
 		groupColorRow.add(groupSelector);
 		groupColorRow.add(colorSwatch);
 		content.add(groupColorRow);
+		content.add(Box.createVerticalStrut(4));
+		content.add(buildHighlightToggle(g));
 		content.add(Box.createVerticalStrut(6));
 
 		// Add / Replace share one line (short labels so they fit side by side).
@@ -919,6 +951,25 @@ public class ComboPanel extends PluginPanel
 		}
 	}
 
+	/** Checkbox: when unticked, this combo's cell draws no bank overlay highlight (the item still renders). */
+	private JCheckBox buildHighlightToggle(ComboGroup g)
+	{
+		JCheckBox box = new JCheckBox("Highlight in bank", !g.hideHighlight);
+		box.setOpaque(false);
+		box.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		box.setToolTipText("<html>Draw this combo's overlay box/dot/etc. on its bank cell.<br>"
+			+ "Unticked: the cell still shows its item, but with no highlight even when the bank overlay is on.</html>");
+		box.addActionListener(e -> {
+			ComboGroup cur = group(g.name);
+			if (cur != null)
+			{
+				cur.hideHighlight = !box.isSelected();
+				save(cur); // ConfigChanged invalidates the overlay's hide cache and relayouts the bank
+			}
+		});
+		return box;
+	}
+
 	/** Dropdown to file this combo under a category (or none). */
 	private JComboBox<String> buildCategorySelector(ComboGroup g)
 	{
@@ -944,6 +995,7 @@ public class ComboPanel extends PluginPanel
 					if (cat != null)
 					{
 						cur.color = cat.color;
+						cur.hideHighlight = cat.hideHighlight;
 					}
 				}
 				save(cur);

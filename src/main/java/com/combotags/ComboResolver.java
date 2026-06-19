@@ -1,9 +1,12 @@
 package com.combotags;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.InventoryID;
@@ -31,6 +34,13 @@ public class ComboResolver
 	// base). Drives per-member variant priority. Built and invalidated alongside bankByBaseCache.
 	private Map<Integer, Integer> bankByVariantCache;
 
+	// comboName -> canonical bases of that combo that ALSO appear in another combo of the SAME non-empty category.
+	// Such a base is "contested": no single cell can own it without two cells fighting over the one physical item,
+	// so it is excluded from winner resolution AND membership/scrub — the item is left unmanaged by the combos.
+	// Cached against the combos-JSON string (any save writes a new string → the key mismatches and we recompute).
+	private volatile String sharedCacheJson;
+	private volatile Map<String, Set<Integer>> sharedBasesByCombo;
+
 	/** Drops the cached bank snapshots. Call when the BANK container changes so the next resolve rescans. */
 	public void invalidateBankCache()
 	{
@@ -54,8 +64,14 @@ public class ComboResolver
 
 		Map<Integer, Integer> bankByBase = bankItemsByBase();
 		Map<Integer, Integer> bankByVariant = bankItemsByVariant();
+		Set<Integer> shared = sharedBases(name);
 		for (Integer base : group.members)
 		{
+			// A base shared with another combo in this category is never assigned to a cell (see sharedBases).
+			if (shared.contains(ItemIndex.canonicalBase(base)))
+			{
+				continue;
+			}
 			// If the user gave this member a variant priority order, the highest-priority OWNED variant wins
 			// (variant-level match, so a specific recolor/version is preferred when several are held).
 			List<Integer> order = group.variantOrder == null ? null : group.variantOrder.get(base);
@@ -107,12 +123,84 @@ public class ComboResolver
 		{
 			return new ArrayList<>();
 		}
+		Set<Integer> shared = sharedBases(name);
 		List<Integer> bases = new ArrayList<>(group.members.size());
 		for (int base : group.members)
 		{
-			bases.add(ItemIndex.canonicalBase(base));
+			int canon = ItemIndex.canonicalBase(base);
+			if (!shared.contains(canon)) // a contested (shared) base is left unmanaged: not a member for scrub/placement
+			{
+				bases.add(canon);
+			}
 		}
 		return bases;
+	}
+
+	/**
+	 * Canonical bases of {@code comboName} that are SHARED with at least one other combo in the same non-empty
+	 * category, and so are excluded from winner resolution and membership. Empty for an ungrouped combo or one
+	 * whose items are unique within its group. Cached against the combos-JSON (auto-refreshes on any combo edit).
+	 */
+	public Set<Integer> sharedBases(String comboName)
+	{
+		String json = plugin.configManager.getConfiguration(ComboTagsPlugin.CONFIG_GROUP, ComboStore.CONFIG_KEY);
+		String key = json == null ? "" : json;
+		Map<String, Set<Integer>> cache = sharedBasesByCombo;
+		if (cache == null || !key.equals(sharedCacheJson))
+		{
+			cache = computeSharedBases();
+			sharedBasesByCombo = cache;
+			sharedCacheJson = key;
+		}
+		return cache.getOrDefault(comboName, Collections.emptySet());
+	}
+
+	/** Builds {@code comboName -> shared canonical bases} by counting, per category, how many combos hold each base. */
+	private Map<String, Set<Integer>> computeSharedBases()
+	{
+		List<ComboGroup> all = ComboStore.cachedAll(plugin.configManager, plugin.gson);
+		// Per non-empty category: canonical base -> number of distinct combos that contain it.
+		Map<String, Map<Integer, Integer>> countByCat = new HashMap<>();
+		for (ComboGroup g : all)
+		{
+			if (g.category == null || g.category.isEmpty())
+			{
+				continue;
+			}
+			Map<Integer, Integer> counts = countByCat.computeIfAbsent(g.category, k -> new HashMap<>());
+			Set<Integer> seen = new HashSet<>(); // a single combo listing an item twice must not self-conflict
+			for (int base : g.members)
+			{
+				int canon = ItemIndex.canonicalBase(base);
+				if (seen.add(canon))
+				{
+					counts.merge(canon, 1, Integer::sum);
+				}
+			}
+		}
+		Map<String, Set<Integer>> result = new HashMap<>();
+		for (ComboGroup g : all)
+		{
+			if (g.category == null || g.category.isEmpty())
+			{
+				continue;
+			}
+			Map<Integer, Integer> counts = countByCat.get(g.category);
+			Set<Integer> shared = new HashSet<>();
+			for (int base : g.members)
+			{
+				int canon = ItemIndex.canonicalBase(base);
+				if (counts.getOrDefault(canon, 0) >= 2)
+				{
+					shared.add(canon);
+				}
+			}
+			if (!shared.isEmpty())
+			{
+				result.put(g.name, shared);
+			}
+		}
+		return result;
 	}
 
 	/** Maps base id → an actual item id currently in the bank (excludes empty slots and placeholders). */

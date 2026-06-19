@@ -82,6 +82,10 @@ public class ComboOverlay extends Overlay
 		ComboTagsConfig.ComboHighlight style = config.comboHighlightStyle();
 		for (Map.Entry<Integer, String> cell : comboCellGroups.entrySet())
 		{
+			if (plugin.isComboHighlightHidden(cell.getValue()))
+			{
+				continue; // this combo's highlight is turned off — render the item but draw no box/dot/etc.
+			}
 			int index = cell.getKey();
 			int dragDeltaX = 0;
 			int dragDeltaY = 0;
