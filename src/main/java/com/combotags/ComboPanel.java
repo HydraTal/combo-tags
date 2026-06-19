@@ -141,8 +141,34 @@ public class ComboPanel extends PluginPanel
 		}
 
 		add(content, BorderLayout.NORTH);
+		if (plugin.config.disablePanelTooltips())
+		{
+			clearTooltips(this); // strip every tooltip just built (incl. right-click menu items)
+		}
 		revalidate();
 		repaint();
+	}
+
+	/** Recursively removes tooltips from a component, its children, and any popup menus it carries. */
+	private static void clearTooltips(Component c)
+	{
+		if (c instanceof JComponent)
+		{
+			JComponent jc = (JComponent) c;
+			jc.setToolTipText(null);
+			JPopupMenu menu = jc.getComponentPopupMenu();
+			if (menu != null)
+			{
+				clearTooltips(menu);
+			}
+		}
+		if (c instanceof Container)
+		{
+			for (Component child : ((Container) c).getComponents())
+			{
+				clearTooltips(child);
+			}
+		}
 	}
 
 	private ComboGroup group(String name)
@@ -362,24 +388,28 @@ public class ComboPanel extends PluginPanel
 		}
 		JLabel warn = new JLabel("⚠");
 		warn.setForeground(WARNING_COLOR);
-		warn.setToolTipText("<html>Two combos in this group share an item, so it is <b>not assigned to any"
-			+ "<br>combo cell</b> (no cell will show, claim, or highlight it).</html>");
-		// Enrich the tooltip with the actual item name(s); getItemComposition must run on the client thread.
-		plugin.clientThread.invokeLater(() -> {
-			StringBuilder names = new StringBuilder();
-			for (int base : shared)
-			{
-				if (names.length() > 0)
+		// Tooltip is set asynchronously (after rebuild's clearTooltips sweep), so it must honor the config itself.
+		if (!plugin.config.disablePanelTooltips())
+		{
+			warn.setToolTipText("<html>Two combos in this group share an item, so it is <b>not assigned to any"
+				+ "<br>combo cell</b> (no cell will show, claim, or highlight it).</html>");
+			// Enrich the tooltip with the actual item name(s); getItemComposition must run on the client thread.
+			plugin.clientThread.invokeLater(() -> {
+				StringBuilder names = new StringBuilder();
+				for (int base : shared)
 				{
-					names.append(", ");
+					if (names.length() > 0)
+					{
+						names.append(", ");
+					}
+					names.append(plugin.itemManager.getItemComposition(base).getName());
 				}
-				names.append(plugin.itemManager.getItemComposition(base).getName());
-			}
-			String tip = "<html><b>Not assigned (shared by multiple combos):</b> " + htmlEscape(names.toString())
-				+ "<br>These items appear in more than one combo in this group, so no combo cell"
-				+ "<br>will show, claim, or highlight them. Keep an item in just one combo to use it.</html>";
-			SwingUtilities.invokeLater(() -> warn.setToolTipText(tip));
-		});
+				String tip = "<html><b>Not assigned (shared by multiple combos):</b> " + htmlEscape(names.toString())
+					+ "<br>These items appear in more than one combo in this group, so no combo cell"
+					+ "<br>will show, claim, or highlight them. Keep an item in just one combo to use it.</html>";
+				SwingUtilities.invokeLater(() -> warn.setToolTipText(tip));
+			});
+		}
 		return warn;
 	}
 
@@ -502,7 +532,7 @@ public class ComboPanel extends PluginPanel
 
 		// Row 3: import a combo (or group) someone shared via clipboard.
 		JButton importBtn = new JButton("Import from clipboard");
-		importBtn.setToolTipText("Paste a copied combo or group share string");
+		importBtn.setToolTipText("Paste a copied combo or group — or several appended (e.g. a whole pastebin) to import them all at once");
 		importBtn.addActionListener(e -> importFromClipboard());
 		form.add(importBtn);
 		return form;
@@ -606,23 +636,98 @@ public class ComboPanel extends PluginPanel
 		info("Copied group \"" + categoryName + "\" (" + bundle.combos.size() + " combos) to the clipboard.");
 	}
 
-	/** Reads the clipboard and imports a combo or a whole group share string (auto-detected). */
+	/** Reads the clipboard and imports every combo/group share token in it — one, or many appended at once. */
 	private void importFromClipboard()
 	{
-		String s = ComboCodec.fromClipboard();
-		if (s == null || !ComboCodec.isComboString(s))
+		List<String> tokens = ComboCodec.extractTokens(ComboCodec.fromClipboard());
+		if (tokens.isEmpty())
 		{
 			info("The clipboard doesn't contain a Combo Tags share string.");
 			return;
 		}
-		if (ComboCodec.isGroupString(s))
+		if (tokens.size() == 1)
 		{
-			importGroupString(s);
+			String t = tokens.get(0);
+			if (ComboCodec.isGroupString(t))
+			{
+				importGroupString(t);
+			}
+			else
+			{
+				importComboString(t);
+			}
+			return;
 		}
-		else
+		importMany(tokens);
+	}
+
+	/**
+	 * Imports several appended share tokens in one pass. Non-interactive (name clashes auto-rename, no per-item
+	 * prompts) with a single combos save and one summary — for pasting a whole pastebin of groups at once.
+	 */
+	private void importMany(List<String> tokens)
+	{
+		List<ComboGroup> all = ComboStore.all(plugin.configManager, plugin.gson);
+		Set<String> taken = new HashSet<>();
+		for (ComboGroup g : all)
 		{
-			importComboString(s);
+			taken.add(g.name);
 		}
+		int groups = 0, combos = 0, failed = 0;
+		for (String t : tokens)
+		{
+			if (ComboCodec.isGroupString(t))
+			{
+				ComboCodec.Bundle b = ComboCodec.importGroup(plugin.gson, t);
+				if (b == null)
+				{
+					failed++;
+					continue;
+				}
+				// Reuse a same-named category (merging into it); create it if new.
+				if (ComboStore.category(plugin.configManager, plugin.gson, b.category.name) == null)
+				{
+					ComboStore.upsertCategory(plugin.configManager, plugin.gson, b.category);
+				}
+				for (ComboGroup g : b.combos)
+				{
+					if (g.name == null || g.name.isEmpty())
+					{
+						continue;
+					}
+					g.name = uniqueAmong(taken, g.name);
+					g.category = b.category.name;
+					taken.add(g.name);
+					all.add(g);
+					combos++;
+				}
+				groups++;
+			}
+			else
+			{
+				ComboGroup g = ComboCodec.importCombo(plugin.gson, t);
+				if (g == null)
+				{
+					failed++;
+					continue;
+				}
+				// An unknown category would hide the combo; drop it so it lands in Ungrouped.
+				if (g.category != null && !g.category.isEmpty()
+					&& ComboStore.category(plugin.configManager, plugin.gson, g.category) == null)
+				{
+					g.category = "";
+				}
+				g.name = uniqueAmong(taken, g.name);
+				taken.add(g.name);
+				all.add(g);
+				combos++;
+			}
+		}
+		ComboStore.save(plugin.configManager, plugin.gson, all); // one write for every imported combo
+		rebuild();
+		info("Imported " + combos + (combos == 1 ? " combo" : " combos")
+			+ (groups > 0 ? " across " + groups + (groups == 1 ? " group" : " groups") : "")
+			+ (failed > 0 ? " (" + failed + " couldn't be read)" : "") + ".");
 	}
 
 	private void importComboString(String s)
@@ -689,6 +794,24 @@ public class ComboPanel extends PluginPanel
 		}
 		rebuild();
 		info("Imported group \"" + bundle.category.name + "\" (" + imported + " combos).");
+	}
+
+	/** Like {@link #uniqueComboName} but tests an in-flight name set (batch imports rename before they're saved). */
+	private String uniqueAmong(Set<String> taken, String name)
+	{
+		if (!taken.contains(name))
+		{
+			return name;
+		}
+		String inner = stripBrackets(name);
+		for (int i = 2; ; i++)
+		{
+			String candidate = ComboGroup.bracket(inner + " " + i);
+			if (!taken.contains(candidate))
+			{
+				return candidate;
+			}
+		}
 	}
 
 	/** A combo name not already in use, derived from {@code name} by appending a numeric suffix. */

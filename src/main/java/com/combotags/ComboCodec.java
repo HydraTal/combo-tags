@@ -6,8 +6,11 @@ import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -21,6 +24,16 @@ public final class ComboCodec
 {
 	public static final String COMBO_PREFIX = "combotag:v1:";
 	public static final String GROUP_PREFIX = "combogroup:v1:";
+
+	// A share token: a prefix plus its trailing base64 run. We split on the prefix BOUNDARY first (below) before
+	// matching, because the prefix letters ("combogroup"/"combotag") are themselves valid base64 — so a greedy
+	// run would otherwise swallow a directly-appended next prefix. The ':' in ":v1:" can't occur in base64, so
+	// the boundary is unambiguous and tokens separate even when concatenated with no whitespace.
+	private static final Pattern TOKEN_PATTERN = Pattern.compile(
+		"(?:" + Pattern.quote(COMBO_PREFIX) + "|" + Pattern.quote(GROUP_PREFIX) + ")[A-Za-z0-9+/=]+");
+	// Zero-width split point right before each prefix, so back-to-back tokens become separate pieces.
+	private static final Pattern TOKEN_BOUNDARY = Pattern.compile(
+		"(?=" + Pattern.quote(COMBO_PREFIX) + "|" + Pattern.quote(GROUP_PREFIX) + ")");
 
 	/** A category plus the combos filed under it, for a whole-group export. */
 	public static final class Bundle
@@ -52,6 +65,30 @@ public final class ComboCodec
 	public static boolean isGroupString(String s)
 	{
 		return s != null && s.trim().startsWith(GROUP_PREFIX);
+	}
+
+	/**
+	 * Every combo/group share token found in arbitrary text, in order. Handles tokens appended back-to-back or
+	 * separated by headers/blank lines (e.g. a pastebin holding several groups) and ignores surrounding text.
+	 */
+	public static List<String> extractTokens(String text)
+	{
+		List<String> out = new ArrayList<>();
+		if (text == null)
+		{
+			return out;
+		}
+		// Split before each prefix (separates back-to-back tokens), then take the leading token of each piece
+		// (any trailing header/whitespace within a piece stops the base64 run).
+		for (String piece : TOKEN_BOUNDARY.split(text))
+		{
+			Matcher m = TOKEN_PATTERN.matcher(piece);
+			if (m.lookingAt())
+			{
+				out.add(m.group());
+			}
+		}
+		return out;
 	}
 
 	/** Decodes a single-combo string; returns a normalized {@link ComboGroup}, or null if invalid. */

@@ -26,14 +26,14 @@ public interface ComboTagsConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "showSidePanel",
-		name = "Show side panel",
-		description = "Show the Combo Tags button in the side toolbar (the panel where you build and manage combos).",
+		keyName = "disablePanelTooltips",
+		name = "Disable panel tooltips",
+		description = "Hide the hover tooltips on the Combo Tags side-panel controls.",
 		position = 1
 	)
-	default boolean showSidePanel()
+	default boolean disablePanelTooltips()
 	{
-		return true;
+		return false;
 	}
 
 	@ConfigItem(

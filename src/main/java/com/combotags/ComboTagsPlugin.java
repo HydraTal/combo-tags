@@ -75,7 +75,7 @@ import net.runelite.client.util.Text;
 @Slf4j
 @PluginDescriptor(
 	name = "Combo Tags",
-	description = "Smart \"combo\" cells for bank tag layouts: one slot shows the best item you own from an ordered group.",
+	description = "Smart \"combo\" cells for bank tag layouts: one slot shows the best item you own from an ordered group, auto-rotating through cosmetic/ornament variants.",
 	tags = {"bank", "tag", "layout", "gear", "combo", "smart"}
 )
 @PluginDependency(BankTagsPlugin.class)
@@ -181,7 +181,12 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 			.priority(COMBO_PANEL_PRIORITY)
 			.panel(comboPanel)
 			.build();
-		updateSidePanel(); // adds the nav button if the "Show side panel" config is on
+		// The side panel is always available while the plugin is enabled.
+		SwingUtilities.invokeLater(() ->
+		{
+			clientToolbar.addNavigation(comboNavButton);
+			navButtonAdded = true;
+		});
 
 		comboMembersUntagged.clear();
 		lastCorePinnedWinners.clear();
@@ -228,29 +233,6 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 		}
 	}
 
-	/** Adds or removes the Combo Tags side-panel nav button to match the "Show side panel" config. EDT-safe. */
-	private void updateSidePanel()
-	{
-		boolean show = config.showSidePanel();
-		SwingUtilities.invokeLater(() ->
-		{
-			if (comboNavButton == null)
-			{
-				return;
-			}
-			if (show && !navButtonAdded)
-			{
-				clientToolbar.addNavigation(comboNavButton);
-				navButtonAdded = true;
-			}
-			else if (!show && navButtonAdded)
-			{
-				clientToolbar.removeNavigation(comboNavButton);
-				navButtonAdded = false;
-			}
-		});
-	}
-
 	// ======================================================================================================
 	// Events
 	// ======================================================================================================
@@ -281,9 +263,15 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 					}
 				});
 			}
-			if ("showSidePanel".equals(event.getKey()))
+			if ("disablePanelTooltips".equals(event.getKey()))
 			{
-				updateSidePanel();
+				SwingUtilities.invokeLater(() ->
+				{
+					if (comboPanel != null)
+					{
+						comboPanel.rebuild();
+					}
+				});
 			}
 		}
 		else if (BankTagsPlugin.CONFIG_GROUP.equals(event.getGroup())
