@@ -1,0 +1,43 @@
+plugins {
+	id 'java'
+}
+
+repositories {
+	mavenLocal()
+	maven {
+		url = 'https://repo.runelite.net'
+	}
+	mavenCentral()
+}
+
+// Hub builds (build=standard) replace this file and compile against the hub's pinned runelite.version;
+// 'latest.release' keeps local builds on the newest client, as the plugin-hub README requires.
+def runeLiteVersion = 'latest.release'
+
+dependencies {
+	compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
+
+	compileOnly 'org.projectlombok:lombok:1.18.4'
+	annotationProcessor 'org.projectlombok:lombok:1.18.4'
+
+	testImplementation 'junit:junit:4.12'
+	testImplementation group: 'net.runelite', name: 'client', version: runeLiteVersion
+}
+
+group = 'com.combotags'
+version = '1.0.0'
+sourceCompatibility = '1.8'
+
+tasks.withType(JavaCompile) {
+	options.encoding = 'UTF-8'
+}
+
+// Launch RuneLite locally with this plugin sideloaded (com.combotags.ComboTagsPluginTest#main).
+// Uses the test runtime classpath (where the runelite client is available) but does NOT run the test task.
+task runClient(type: JavaExec) {
+	group = 'application'
+	description = 'Launch RuneLite with this plugin sideloaded.'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.combotags.ComboTagsPluginTest'
+	enableAssertions = true // RuneLite.main() refuses to start without assertions (-ea) enabled.
+}
