@@ -7,8 +7,13 @@ import java.awt.Container;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
 import java.awt.GridLayout;
+import java.awt.MouseInfo;
 import java.awt.Point;
+import java.awt.Rectangle;
+import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
@@ -35,8 +40,10 @@ import javax.swing.JPopupMenu;
 import javax.swing.JPanel;
 import javax.swing.JSeparator;
 import javax.swing.JTextField;
+import javax.swing.JWindow;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.border.EmptyBorder;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.EquipmentInventorySlot;
@@ -332,13 +339,12 @@ public class ComboPanel extends PluginPanel
 		JMenuItem copyGroup = new JMenuItem("Copy group to clipboard");
 		copyGroup.addActionListener(e -> exportGroupToClipboard(cat.name));
 		JMenuItem delete = new JMenuItem("Delete");
-		delete.addActionListener(e -> {
-			if (confirmDelete("group \"" + cat.name + "\" (its combos become ungrouped)"))
-			{
-				ComboStore.deleteCategory(plugin.configManager, plugin.gson, cat.name);
-				rebuild();
-			}
-		});
+		delete.addActionListener(e -> promptDeleteGroup(cat));
+		JMenuItem replaceAllTabs = new JMenuItem("Replace group in all tabs");
+		replaceAllTabs.setToolTipText("Consolidate this group's combos into cells in every layout-enabled tab that has their items");
+		replaceAllTabs.addActionListener(e -> plugin.replaceCategoryInAllTabs(cat.name));
+		menu.add(replaceAllTabs);
+		menu.addSeparator();
 		menu.add(up);
 		menu.add(down);
 		menu.addSeparator();
@@ -611,7 +617,7 @@ public class ComboPanel extends PluginPanel
 			return;
 		}
 		ComboCodec.toClipboard(ComboCodec.exportCombo(plugin.gson, g));
-		info("Copied combo \"" + stripBrackets(name) + "\" to the clipboard.");
+		toast("Copied combo \"" + stripBrackets(name) + "\" to the clipboard.");
 	}
 
 	/** Copies a category and all of its combos to the clipboard as one group share string. */
@@ -633,7 +639,7 @@ public class ComboPanel extends PluginPanel
 			}
 		}
 		ComboCodec.toClipboard(ComboCodec.exportGroup(plugin.gson, bundle));
-		info("Copied group \"" + categoryName + "\" (" + bundle.combos.size() + " combos) to the clipboard.");
+		toast("Copied group \"" + categoryName + "\" (" + bundle.combos.size() + " combos) to the clipboard.");
 	}
 
 	/** Reads the clipboard and imports every combo/group share token in it — one, or many appended at once. */
@@ -662,8 +668,8 @@ public class ComboPanel extends PluginPanel
 	}
 
 	/**
-	 * Imports several appended share tokens in one pass. Non-interactive (name clashes auto-rename, no per-item
-	 * prompts) with a single combos save and one summary — for pasting a whole pastebin of groups at once.
+	 * Imports several appended share tokens in one pass. Non-interactive (combos whose names already exist are
+	 * skipped, no per-item prompts) with a single combos save and one summary — for a whole pastebin at once.
 	 */
 	private void importMany(List<String> tokens)
 	{
@@ -673,7 +679,7 @@ public class ComboPanel extends PluginPanel
 		{
 			taken.add(g.name);
 		}
-		int groups = 0, combos = 0, failed = 0;
+		int groups = 0, combos = 0, skipped = 0, failed = 0;
 		for (String t : tokens)
 		{
 			if (ComboCodec.isGroupString(t))
@@ -695,7 +701,11 @@ public class ComboPanel extends PluginPanel
 					{
 						continue;
 					}
-					g.name = uniqueAmong(taken, g.name);
+					if (taken.contains(g.name))
+					{
+						skipped++; // a combo with this name already exists — leave it untouched
+						continue;
+					}
 					g.category = b.category.name;
 					taken.add(g.name);
 					all.add(g);
@@ -711,13 +721,17 @@ public class ComboPanel extends PluginPanel
 					failed++;
 					continue;
 				}
+				if (taken.contains(g.name))
+				{
+					skipped++; // already present — skip
+					continue;
+				}
 				// An unknown category would hide the combo; drop it so it lands in Ungrouped.
 				if (g.category != null && !g.category.isEmpty()
 					&& ComboStore.category(plugin.configManager, plugin.gson, g.category) == null)
 				{
 					g.category = "";
 				}
-				g.name = uniqueAmong(taken, g.name);
 				taken.add(g.name);
 				all.add(g);
 				combos++;
@@ -727,6 +741,7 @@ public class ComboPanel extends PluginPanel
 		rebuild();
 		info("Imported " + combos + (combos == 1 ? " combo" : " combos")
 			+ (groups > 0 ? " across " + groups + (groups == 1 ? " group" : " groups") : "")
+			+ (skipped > 0 ? ", " + skipped + " skipped (already present)" : "")
 			+ (failed > 0 ? " (" + failed + " couldn't be read)" : "") + ".");
 	}
 
@@ -747,17 +762,8 @@ public class ComboPanel extends PluginPanel
 		}
 		if (group(g.name) != null)
 		{
-			int choice = JOptionPane.showConfirmDialog(this,
-				"A combo named \"" + stripBrackets(g.name) + "\" already exists.\nOverwrite it? (No imports a copy.)",
-				"Import combo", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
-			if (choice != JOptionPane.YES_OPTION && choice != JOptionPane.NO_OPTION)
-			{
-				return;
-			}
-			if (choice == JOptionPane.NO_OPTION)
-			{
-				g.name = uniqueComboName(g.name);
-			}
+			info("A combo named \"" + stripBrackets(g.name) + "\" already exists — skipped.");
+			return;
 		}
 		save(g);
 		openGroup(g.name);
@@ -777,7 +783,7 @@ public class ComboPanel extends PluginPanel
 		{
 			ComboStore.upsertCategory(plugin.configManager, plugin.gson, bundle.category);
 		}
-		int imported = 0;
+		int imported = 0, skipped = 0;
 		for (ComboGroup g : bundle.combos)
 		{
 			if (g.name == null || g.name.isEmpty())
@@ -786,55 +792,98 @@ public class ComboPanel extends PluginPanel
 			}
 			if (group(g.name) != null)
 			{
-				g.name = uniqueComboName(g.name);
+				skipped++; // a combo with this name already exists — leave it untouched
+				continue;
 			}
 			g.category = bundle.category.name;
 			save(g);
 			imported++;
 		}
 		rebuild();
-		info("Imported group \"" + bundle.category.name + "\" (" + imported + " combos).");
-	}
-
-	/** Like {@link #uniqueComboName} but tests an in-flight name set (batch imports rename before they're saved). */
-	private String uniqueAmong(Set<String> taken, String name)
-	{
-		if (!taken.contains(name))
-		{
-			return name;
-		}
-		String inner = stripBrackets(name);
-		for (int i = 2; ; i++)
-		{
-			String candidate = ComboGroup.bracket(inner + " " + i);
-			if (!taken.contains(candidate))
-			{
-				return candidate;
-			}
-		}
-	}
-
-	/** A combo name not already in use, derived from {@code name} by appending a numeric suffix. */
-	private String uniqueComboName(String name)
-	{
-		if (group(name) == null)
-		{
-			return name;
-		}
-		String inner = stripBrackets(name);
-		for (int i = 2; ; i++)
-		{
-			String candidate = ComboGroup.bracket(inner + " " + i);
-			if (group(candidate) == null)
-			{
-				return candidate;
-			}
-		}
+		info("Imported group \"" + bundle.category.name + "\" (" + imported + " combos"
+			+ (skipped > 0 ? ", " + skipped + " skipped" : "") + ").");
 	}
 
 	private void info(String message)
 	{
 		JOptionPane.showMessageDialog(this, message, "Combo Tags", JOptionPane.INFORMATION_MESSAGE);
+	}
+
+	/**
+	 * A brief, non-blocking tooltip-style "toast" near the cursor that fades out on its own — used for
+	 * copy-to-clipboard confirmations so they don't interrupt with a modal dialog. Falls back to a timed show
+	 * (no fade) where window translucency isn't supported.
+	 */
+	private void toast(String message)
+	{
+		Window owner = SwingUtilities.getWindowAncestor(this);
+		JWindow toast = new JWindow(owner);
+		toast.setFocusableWindowState(false); // never steal focus
+
+		JLabel label = new JLabel(message);
+		label.setOpaque(true);
+		label.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		label.setForeground(Color.WHITE);
+		label.setBorder(BorderFactory.createCompoundBorder(
+			BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR), new EmptyBorder(6, 10, 6, 10)));
+		toast.add(label);
+		toast.pack();
+
+		// Appear just below-right of the pointer, clamped to the screen.
+		Point at;
+		try
+		{
+			at = MouseInfo.getPointerInfo().getLocation();
+			at.translate(12, 12);
+		}
+		catch (Exception ex)
+		{
+			at = new Point(0, 0);
+		}
+		Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment()
+			.getDefaultScreenDevice().getDefaultConfiguration().getBounds();
+		int x = Math.min(Math.max(screen.x, at.x), screen.x + screen.width - toast.getWidth());
+		int y = Math.min(Math.max(screen.y, at.y), screen.y + screen.height - toast.getHeight());
+		toast.setLocation(x, y);
+
+		boolean canFade = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice()
+			.isWindowTranslucencySupported(GraphicsDevice.WindowTranslucency.TRANSLUCENT);
+		toast.setVisible(true);
+
+		// Hold briefly, then fade out (or just dispose if translucency is unsupported).
+		Timer hold = new Timer(900, null);
+		hold.setRepeats(false);
+		hold.addActionListener(e ->
+		{
+			if (!canFade)
+			{
+				toast.dispose();
+				return;
+			}
+			final float[] opacity = {1f};
+			Timer fade = new Timer(45, null);
+			fade.addActionListener(fe ->
+			{
+				opacity[0] -= 0.12f;
+				if (opacity[0] <= 0f)
+				{
+					fade.stop();
+					toast.dispose();
+					return;
+				}
+				try
+				{
+					toast.setOpacity(opacity[0]);
+				}
+				catch (Exception ex)
+				{
+					fade.stop();
+					toast.dispose();
+				}
+			});
+			fade.start();
+		});
+		hold.start();
 	}
 
 	private JPanel buildGroupRow(String name, boolean indented)
@@ -878,17 +927,21 @@ public class ComboPanel extends PluginPanel
 		JMenuItem replaceInTab = new JMenuItem("Replace in tab");
 		replaceInTab.setToolTipText("Removes this combo's member items from the open tag tab and puts the cell where they were");
 		replaceInTab.addActionListener(e -> plugin.replaceComboInOpenTab(name));
+		JMenuItem replaceAllTabs = new JMenuItem("Replace in all tabs");
+		replaceAllTabs.setToolTipText("Consolidate this combo's loose items into a cell in every layout-enabled tab that has them");
+		replaceAllTabs.addActionListener(e -> plugin.replaceComboInAllTabs(name));
 		JMenuItem copy = new JMenuItem("Copy to clipboard");
 		copy.addActionListener(e -> exportComboToClipboard(name));
 		JMenuItem delete = new JMenuItem("Delete");
 		delete.addActionListener(e -> {
 			if (confirmDelete("combo \"" + stripBrackets(name) + "\""))
 			{
-				ComboStore.delete(plugin.configManager, plugin.gson, name);
-				rebuild();
+				// Plugin removes the combo, replaces its cells with the goal placeholder, then rebuilds this panel.
+				plugin.deleteCombo(name);
 			}
 		});
 		menu.add(replaceInTab);
+		menu.add(replaceAllTabs);
 		menu.addSeparator();
 		menu.add(up);
 		menu.add(down);
@@ -1574,6 +1627,28 @@ public class ComboPanel extends PluginPanel
 		int choice = JOptionPane.showConfirmDialog(this, "Delete " + what + "?", "Confirm delete",
 			JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
 		return choice == JOptionPane.YES_OPTION;
+	}
+
+	/** Group-delete prompt: keep the combos (un-file them), delete the combos too, or cancel. */
+	private void promptDeleteGroup(ComboCategory cat)
+	{
+		Object[] options = {"Group", "Group with contents", "Cancel"};
+		int choice = JOptionPane.showOptionDialog(this,
+			"Delete group \"" + cat.name + "\"?\n\n"
+				+ "Group: removes the group; its combos become ungrouped.\n"
+				+ "Group with contents: also deletes every combo in the group.",
+			"Delete group", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE,
+			null, options, options[2]); // default to Cancel
+		if (choice == 0) // Group
+		{
+			ComboStore.deleteCategory(plugin.configManager, plugin.gson, cat.name);
+			rebuild();
+		}
+		else if (choice == 1) // Group with contents
+		{
+			// Plugin deletes the combos, replaces each cell with its goal placeholder, then rebuilds this panel.
+			plugin.deleteCategoryWithContents(cat.name);
+		}
 	}
 
 	/** Sets (or, if already favorited, clears) the combo's favorite display icon to a specific item id. */

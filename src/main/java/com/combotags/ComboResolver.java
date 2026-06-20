@@ -33,6 +33,10 @@ public class ComboResolver
 	// canonicalize(id) -> actual bank item id, VARIANT-level (distinguishes recolors / charge states that share a
 	// base). Drives per-member variant priority. Built and invalidated alongside bankByBaseCache.
 	private Map<Integer, Integer> bankByVariantCache;
+	// As above, but ALSO counting leftover bank placeholders (mapped to the real item they stand for). Used only by
+	// resolveRestoreItem: when a combo cell is deleted, a placeholder still means "you have this", so it's restored.
+	private Map<Integer, Integer> bankByBasePresentCache;
+	private Map<Integer, Integer> bankByVariantPresentCache;
 
 	// comboName -> canonical bases of that combo that ALSO appear in another combo of the SAME non-empty category.
 	// Such a base is "contested": no single cell can own it without two cells fighting over the one physical item,
@@ -46,6 +50,8 @@ public class ComboResolver
 	{
 		bankByBaseCache = null;
 		bankByVariantCache = null;
+		bankByBasePresentCache = null;
+		bankByVariantPresentCache = null;
 	}
 
 	/**
@@ -100,6 +106,45 @@ public class ComboResolver
 		// pinned). Collapse any non-positive result to the documented -1 "unknown/no members" sentinel.
 		int ghost = group.displayIconId();
 		return ghost > 0 ? ghost : -1;
+	}
+
+	/**
+	 * The item to leave behind when a combo's cell is removed (on delete): the highest-priority member you have
+	 * in the bank as a real item OR a leftover bank placeholder (returned as the real item id, so it relays as the
+	 * item or its placeholder). Only if NONE of the combo's items are in the bank at all does it fall back to the
+	 * combo's goal — its favorite, else its top member. Returns {@code -1} if the combo is unknown or empty.
+	 */
+	public int resolveRestoreItem(String name)
+	{
+		ComboGroup group = ComboStore.cachedGet(plugin.configManager, plugin.gson, name);
+		if (group == null || group.members.isEmpty())
+		{
+			return -1;
+		}
+		Map<Integer, Integer> byBase = bankItemsByBasePresent();
+		Map<Integer, Integer> byVariant = bankItemsByVariantPresent();
+		for (Integer base : group.members)
+		{
+			List<Integer> order = group.variantOrder == null ? null : group.variantOrder.get(base);
+			if (order != null)
+			{
+				for (Integer variant : order)
+				{
+					Integer actual = byVariant.get(plugin.itemManager.canonicalize(variant));
+					if (actual != null)
+					{
+						return actual;
+					}
+				}
+			}
+			Integer actual = byBase.get(ItemIndex.canonicalBase(base));
+			if (actual != null)
+			{
+				return actual;
+			}
+		}
+		int goal = group.displayIconId();
+		return goal > 0 ? goal : -1;
 	}
 
 	/** Whether a real (non-placeholder, qty&gt;0) copy of the given item is currently in the bank. */
@@ -217,6 +262,20 @@ public class ComboResolver
 		return bankByVariantCache != null ? bankByVariantCache : new HashMap<>();
 	}
 
+	/** Like {@link #bankItemsByBase} but also counting leftover bank placeholders (for restore-on-delete). */
+	private Map<Integer, Integer> bankItemsByBasePresent()
+	{
+		ensureBankSnapshot();
+		return bankByBasePresentCache != null ? bankByBasePresentCache : new HashMap<>();
+	}
+
+	/** Like {@link #bankItemsByVariant} but also counting leftover bank placeholders (for restore-on-delete). */
+	private Map<Integer, Integer> bankItemsByVariantPresent()
+	{
+		ensureBankSnapshot();
+		return bankByVariantPresentCache != null ? bankByVariantPresentCache : new HashMap<>();
+	}
+
 	/** Builds both bank snapshots (base-level and variant-level) once, until the next {@link #invalidateBankCache}. */
 	private void ensureBankSnapshot()
 	{
@@ -233,23 +292,42 @@ public class ComboResolver
 			// The bank just isn't loaded yet (no ItemContainerChanged to invalidate on) → don't cache; retry later.
 			return;
 		}
-		Map<Integer, Integer> byBase = new HashMap<>();
+		Map<Integer, Integer> byBase = new HashMap<>();          // real, owned items only (drives cell display)
 		Map<Integer, Integer> byVariant = new HashMap<>();
+		Map<Integer, Integer> byBasePresent = new HashMap<>();   // + bank placeholders, keyed to their real item
+		Map<Integer, Integer> byVariantPresent = new HashMap<>();
 		for (Item item : bank.getItems())
 		{
 			int id = item.getId();
-			// A placeholder (count 0) means you don't actually own it → fall through to the next member.
-			if (id < 0 || item.getQuantity() <= 0 || plugin.isPlaceholder(id))
+			if (id < 0)
 			{
 				continue;
 			}
-			int canon = plugin.itemManager.canonicalize(id);
-			byVariant.putIfAbsent(canon, id); // variant-level key stays raw-canonical (distinguishes recolors/charges)
-			// Base-level key uses the shared definition so ownership lines up with the plugin's scrub. These items
-			// are already non-placeholder (filtered above), so this equals statBaseOfCanon(canon) here.
-			byBase.putIfAbsent(ItemIndex.comboBaseOf(plugin.itemManager, id), id);
+			boolean placeholder = plugin.isPlaceholder(id);
+			// The real item this slot represents: itself, or the item a leftover bank placeholder stands for.
+			int realId = placeholder ? plugin.itemManager.getItemComposition(id).getPlaceholderId() : id;
+			if (!placeholder && item.getQuantity() <= 0)
+			{
+				continue; // genuinely empty slot
+			}
+			if (realId <= 0)
+			{
+				continue;
+			}
+			int canon = plugin.itemManager.canonicalize(realId);
+			int base = ItemIndex.comboBaseOf(plugin.itemManager, realId);
+			byVariantPresent.putIfAbsent(canon, realId);
+			byBasePresent.putIfAbsent(base, realId);
+			// A placeholder (count 0) means you don't actually own it → excluded from the cell-display maps.
+			if (!placeholder)
+			{
+				byVariant.putIfAbsent(canon, realId);
+				byBase.putIfAbsent(base, realId);
+			}
 		}
 		bankByVariantCache = byVariant;
 		bankByBaseCache = byBase;
+		bankByVariantPresentCache = byVariantPresent;
+		bankByBasePresentCache = byBasePresent;
 	}
 }

@@ -922,6 +922,53 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 		});
 	}
 
+	/**
+	 * Consolidates a combo's loose member items into a smart cell in EVERY layout-enabled bank tag tab that has
+	 * them — the all-tabs counterpart to {@link #replaceComboInOpenTab}. Works at the config level (via
+	 * {@link #replaceComboIntoTab}), so it also covers tabs you haven't opened this session; their winner is
+	 * pinned the next time the bank loads that tab.
+	 */
+	public void replaceComboInAllTabs(String comboGroup)
+	{
+		clientThread.invokeLater(() ->
+		{
+			String active = bankTagsService.getActiveTag();
+			int changed = 0;
+			boolean activeBecameHost = false;
+			for (String tab : allTagTabs())
+			{
+				if (!hasRuneliteLayout(tab))
+				{
+					continue; // combo cells only live in layout-enabled tabs
+				}
+				boolean wasHost = comboBankTags.containsKey(tab);
+				if (replaceComboIntoTab(tab, comboGroup) != ComboReplaceResult.ABSENT)
+				{
+					changed++;
+					if (!wasHost && tab.equalsIgnoreCase(active))
+					{
+						activeBecameHost = true;
+					}
+				}
+			}
+			if (activeBecameHost)
+			{
+				recaptureActiveComboCoreTab();
+			}
+			bankSearch.layoutBank();
+			chatMessage(changed == 0
+				? "Combo \"" + comboGroup + "\" isn't loose in any tab — nothing to replace."
+				: "Replaced combo \"" + comboGroup + "\" in " + changed + (changed == 1 ? " tab." : " tabs."));
+		});
+	}
+
+	/** Every bank tag tab name from the bank-tags config, regardless of whether it's loaded in the UI. Client thread. */
+	private List<String> allTagTabs()
+	{
+		String csv = configManager.getConfiguration(BankTagsPlugin.CONFIG_GROUP, BankTagsPlugin.TAG_TABS_CONFIG);
+		return csv == null || csv.isEmpty() ? new ArrayList<>() : new ArrayList<>(Text.fromCSV(csv));
+	}
+
 	/** Replaces EVERY combo filed under the given category into the open tab, in one client-thread pass. */
 	public void replaceCategoryInOpenTab(String category)
 	{
@@ -937,115 +984,178 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 				chatMessage("Enable layout on this tab (right-click the tab → Enable layout) first.");
 				return;
 			}
-			List<String> groups = new ArrayList<>();
-			for (ComboGroup g : ComboStore.all(configManager, gson))
-			{
-				if (category.equals(g.category))
-				{
-					groups.add(g.name);
-				}
-			}
+			List<String> groups = comboNamesInCategory(category);
 			if (groups.isEmpty())
 			{
 				chatMessage("No combos in group \"" + category + "\".");
 				return;
 			}
 			boolean wasHost = comboBankTags.containsKey(hostTag);
-
-			// One deterministic pass over the whole group (the old per-combo loop dumped any combo whose members
-			// weren't pinned in the layout int[] at firstEmptyCorePos, far from the rest). Each present combo keeps
-			// its own top-left-most member slot; a combo present only via tags fills the group's FREED slots
-			// (member slots not used as some combo's own top-left), top-left-most first, so cells stay within the
-			// footprint the group already occupied. maintainComboCoreTab then scrubs the extra member copies
-			// (emptying those slots) and pins each winner at its target.
-			net.runelite.client.plugins.banktags.tabs.Layout core = coreLayoutFor(hostTag);
-			int[] l = core != null ? core.getLayout() : new int[0];
-			List<Integer> tagged = tagManager.getItemsForTag(Text.standardize(hostTag));
-
-			List<String> present = new ArrayList<>();
-			Map<String, Integer> ownTopLeft = new HashMap<>(); // combo -> its top-left member slot (absent if tag-only)
-			java.util.TreeSet<Integer> groupSlots = new java.util.TreeSet<>(); // every layout slot a group member sits in
-			for (String comboGroup : groups)
-			{
-				Set<Integer> mb = new HashSet<>(comboResolver.orderedMemberBases(comboGroup));
-				int top = Integer.MAX_VALUE;
-				for (int pos = 0; pos < l.length; pos++)
-				{
-					if (l[pos] > 0 && mb.contains(comboBaseOf(l[pos])))
-					{
-						groupSlots.add(pos);
-						top = Math.min(top, pos);
-					}
-				}
-				if (top != Integer.MAX_VALUE)
-				{
-					present.add(comboGroup);
-					ownTopLeft.put(comboGroup, top);
-					continue;
-				}
-				for (int item : tagged)
-				{
-					if (mb.contains(comboBaseOf(Math.abs(item))))
-					{
-						present.add(comboGroup); // tagged but not pinned in the layout
-						break;
-					}
-				}
-			}
-			if (present.isEmpty())
+			int placed = replaceCategoryIntoTab(hostTag, groups);
+			if (placed == 0)
 			{
 				chatMessage("No combos from group \"" + category + "\" are in tab \"" + hostTag + "\" — nothing to replace.");
 				return;
 			}
-
-			// Untag every member of the present combos (both tag forms).
-			for (String comboGroup : present)
-			{
-				Set<Integer> mb = new HashSet<>(comboResolver.orderedMemberBases(comboGroup));
-				for (int item : tagged)
-				{
-					if (mb.contains(comboBaseOf(Math.abs(item))))
-					{
-						removeBankTag(item, hostTag);
-					}
-				}
-			}
-
-			// Freed group slots = those a member sits in but no combo claims as its own top-left, top-left-most first.
-			Set<Integer> claimed = new HashSet<>(ownTopLeft.values());
-			List<Integer> freed = new ArrayList<>();
-			for (int slot : groupSlots)
-			{
-				if (!claimed.contains(slot))
-				{
-					freed.add(slot);
-				}
-			}
-			List<ComboSlots.Slot> slots = ComboSlots.read(configManager, hostTag);
-			slots.removeIf(s -> present.contains(s.getGroup())); // re-place these combos' cells from scratch
-			int freedIdx = 0;
-			for (String comboGroup : present)
-			{
-				Integer target = ownTopLeft.get(comboGroup);
-				if (target == null)
-				{
-					target = freedIdx < freed.size() ? freed.get(freedIdx++) : firstEmptyCorePos(core, slots);
-				}
-				slots.add(new ComboSlots.Slot(target, comboGroup));
-			}
-			ComboSlots.write(configManager, hostTag, slots);
-			invalidateComboCellGroupsCache();
-
-			ensureComboBankTagRegistered(hostTag);
-			maintainComboCoreTab(hostTag);
 			if (!wasHost)
 			{
 				recaptureActiveComboCoreTab();
 			}
 			bankSearch.layoutBank();
-			chatMessage("Replaced group \"" + category + "\" (" + present.size() + " of " + groups.size()
+			chatMessage("Replaced group \"" + category + "\" (" + placed + " of " + groups.size()
 				+ " combos) in tab \"" + hostTag + "\".");
 		});
+	}
+
+	/**
+	 * Replaces every combo of a category into EVERY layout-enabled bank tag tab that has them — the all-tabs
+	 * counterpart to {@link #replaceCategoryInOpenTab}. Config-level (via {@link #replaceCategoryIntoTab}), so it
+	 * also covers tabs you haven't opened this session; their winners pin the next time the bank loads them.
+	 */
+	public void replaceCategoryInAllTabs(String category)
+	{
+		clientThread.invokeLater(() ->
+		{
+			List<String> groups = comboNamesInCategory(category);
+			if (groups.isEmpty())
+			{
+				chatMessage("No combos in group \"" + category + "\".");
+				return;
+			}
+			String active = bankTagsService.getActiveTag();
+			int tabs = 0;
+			boolean activeBecameHost = false;
+			for (String tab : allTagTabs())
+			{
+				if (!hasRuneliteLayout(tab))
+				{
+					continue;
+				}
+				boolean wasHost = comboBankTags.containsKey(tab);
+				if (replaceCategoryIntoTab(tab, groups) > 0)
+				{
+					tabs++;
+					if (!wasHost && tab.equalsIgnoreCase(active))
+					{
+						activeBecameHost = true;
+					}
+				}
+			}
+			if (activeBecameHost)
+			{
+				recaptureActiveComboCoreTab();
+			}
+			bankSearch.layoutBank();
+			chatMessage(tabs == 0
+				? "Group \"" + category + "\" isn't loose in any tab — nothing to replace."
+				: "Replaced group \"" + category + "\" in " + tabs + (tabs == 1 ? " tab." : " tabs."));
+		});
+	}
+
+	/** The combo names filed under a category, in stored order. */
+	private List<String> comboNamesInCategory(String category)
+	{
+		List<String> groups = new ArrayList<>();
+		for (ComboGroup g : ComboStore.all(configManager, gson))
+		{
+			if (category.equals(g.category))
+			{
+				groups.add(g.name);
+			}
+		}
+		return groups;
+	}
+
+	/**
+	 * Places every present combo of {@code groups} into {@code hostTag} as a smart cell, consolidating loose
+	 * member items within the group's existing footprint: each present combo keeps its own top-left-most member
+	 * slot; a combo present only via tags fills the group's FREED slots (member slots not used as some combo's own
+	 * top-left), top-left-most first, so cells stay within the footprint the group already occupied.
+	 * maintainComboCoreTab then scrubs the extra member copies and pins each winner at its target. Returns how many
+	 * combos were present/placed (0 = none); the caller registers/recaptures and relayouts. Client thread.
+	 */
+	private int replaceCategoryIntoTab(String hostTag, List<String> groups)
+	{
+		net.runelite.client.plugins.banktags.tabs.Layout core = coreLayoutFor(hostTag);
+		int[] l = core != null ? core.getLayout() : new int[0];
+		List<Integer> tagged = tagManager.getItemsForTag(Text.standardize(hostTag));
+
+		List<String> present = new ArrayList<>();
+		Map<String, Integer> ownTopLeft = new HashMap<>(); // combo -> its top-left member slot (absent if tag-only)
+		java.util.TreeSet<Integer> groupSlots = new java.util.TreeSet<>(); // every layout slot a group member sits in
+		for (String comboGroup : groups)
+		{
+			Set<Integer> mb = new HashSet<>(comboResolver.orderedMemberBases(comboGroup));
+			int top = Integer.MAX_VALUE;
+			for (int pos = 0; pos < l.length; pos++)
+			{
+				if (l[pos] > 0 && mb.contains(comboBaseOf(l[pos])))
+				{
+					groupSlots.add(pos);
+					top = Math.min(top, pos);
+				}
+			}
+			if (top != Integer.MAX_VALUE)
+			{
+				present.add(comboGroup);
+				ownTopLeft.put(comboGroup, top);
+				continue;
+			}
+			for (int item : tagged)
+			{
+				if (mb.contains(comboBaseOf(Math.abs(item))))
+				{
+					present.add(comboGroup); // tagged but not pinned in the layout
+					break;
+				}
+			}
+		}
+		if (present.isEmpty())
+		{
+			return 0;
+		}
+
+		// Untag every member of the present combos (both tag forms).
+		for (String comboGroup : present)
+		{
+			Set<Integer> mb = new HashSet<>(comboResolver.orderedMemberBases(comboGroup));
+			for (int item : tagged)
+			{
+				if (mb.contains(comboBaseOf(Math.abs(item))))
+				{
+					removeBankTag(item, hostTag);
+				}
+			}
+		}
+
+		// Freed group slots = those a member sits in but no combo claims as its own top-left, top-left-most first.
+		Set<Integer> claimed = new HashSet<>(ownTopLeft.values());
+		List<Integer> freed = new ArrayList<>();
+		for (int slot : groupSlots)
+		{
+			if (!claimed.contains(slot))
+			{
+				freed.add(slot);
+			}
+		}
+		List<ComboSlots.Slot> slots = ComboSlots.read(configManager, hostTag);
+		slots.removeIf(s -> present.contains(s.getGroup())); // re-place these combos' cells from scratch
+		int freedIdx = 0;
+		for (String comboGroup : present)
+		{
+			Integer target = ownTopLeft.get(comboGroup);
+			if (target == null)
+			{
+				target = freedIdx < freed.size() ? freed.get(freedIdx++) : firstEmptyCorePos(core, slots);
+			}
+			slots.add(new ComboSlots.Slot(target, comboGroup));
+		}
+		ComboSlots.write(configManager, hostTag, slots);
+		invalidateComboCellGroupsCache();
+
+		ensureComboBankTagRegistered(hostTag);
+		maintainComboCoreTab(hostTag);
+		return present.size();
 	}
 
 	/** Outcome of {@link #replaceComboIntoTab}: a cell was newly placed, an existing one refreshed, or absent. */
@@ -1171,6 +1281,122 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 		}
 		maintainComboCoreTab(hostTag);
 		bankSearch.layoutBank();
+	}
+
+	/**
+	 * Deletes a category AND its combos, replacing each combo's cells with its goal placeholder (see
+	 * {@link #replaceComboCellsWithGoal}) so no orphan cell is left behind. Safe to call from the EDT.
+	 */
+	public void deleteCategoryWithContents(String categoryName)
+	{
+		clientThread.invokeLater(() ->
+		{
+			// Combos in this category + each one's goal item, captured before deletion.
+			Set<String> names = new HashSet<>();
+			Map<String, Integer> goalItem = new HashMap<>();
+			for (ComboGroup g : ComboStore.all(configManager, gson))
+			{
+				if (categoryName.equals(g.category))
+				{
+					names.add(g.name);
+					addGoalItem(goalItem, g.name);
+				}
+			}
+			replaceComboCellsWithGoal(names, goalItem);
+			ComboStore.deleteCategoryAndCombos(configManager, gson, categoryName);
+			finishComboDeletion();
+		});
+	}
+
+	/**
+	 * Deletes a single combo, replacing its cells with its goal placeholder so no orphan cell is left behind.
+	 * Safe to call from the EDT.
+	 */
+	public void deleteCombo(String comboName)
+	{
+		clientThread.invokeLater(() ->
+		{
+			Map<String, Integer> goalItem = new HashMap<>();
+			addGoalItem(goalItem, comboName);
+			replaceComboCellsWithGoal(Collections.singleton(comboName), goalItem);
+			ComboStore.delete(configManager, gson, comboName);
+			finishComboDeletion();
+		});
+	}
+
+	/**
+	 * Records the item to leave behind for a deleted combo under its name: the highest-priority member you have in
+	 * the bank (real item or leftover placeholder), or its favorite/top member if you have none. See
+	 * {@link ComboResolver#resolveRestoreItem}. Client thread (reads the bank snapshot).
+	 */
+	private void addGoalItem(Map<String, Integer> goalItem, String comboName)
+	{
+		int id = comboResolver.resolveRestoreItem(comboName);
+		if (id > 0)
+		{
+			goalItem.put(comboName, id);
+		}
+	}
+
+	/**
+	 * In every host tab, replaces any cell belonging to one of {@code names} with a normal tagged placeholder of
+	 * its goal item (from {@code goalItem}) at the cell's slot, then removes the cell. Client thread.
+	 */
+	private void replaceComboCellsWithGoal(Set<String> names, Map<String, Integer> goalItem)
+	{
+		for (String hostTag : comboHostTags())
+		{
+			List<ComboSlots.Slot> slots = ComboSlots.read(configManager, hostTag);
+			// Use the layout straight from config (coreLayoutFor → loadLayout for non-active tabs) so the
+			// placeholder is written for EVERY host tab that has a layout — not just tabs currently loaded in
+			// the bank UI. isVanillaLayoutEnabled() gates on tabManager (UI state), which is false for tabs the
+			// user hasn't opened this session, leaving their old ghost (favorite) in place.
+			net.runelite.client.plugins.banktags.tabs.Layout core = coreLayoutFor(hostTag);
+			boolean changed = false;
+			boolean layoutChanged = false;
+			for (Iterator<ComboSlots.Slot> it = slots.iterator(); it.hasNext(); )
+			{
+				ComboSlots.Slot s = it.next();
+				if (!names.contains(s.getGroup()))
+				{
+					continue;
+				}
+				Integer item = goalItem.get(s.getGroup());
+				if (item != null && core != null)
+				{
+					// Tagged + laid out at the cell's slot, so it survives as a normal bank-tag placeholder.
+					tagManager.addTag(item, hostTag, false);
+					core.setItemAtPos(item, s.getIndex());
+					layoutChanged = true;
+				}
+				it.remove();
+				changed = true;
+			}
+			if (changed)
+			{
+				ComboSlots.write(configManager, hostTag, slots);
+				if (layoutChanged && core != null)
+				{
+					layoutManager.saveLayout(core);
+				}
+				lastCorePinnedWinners.remove(hostTag); // cells changed → force a fresh maintain pass
+			}
+		}
+		invalidateComboCellGroupsCache();
+	}
+
+	/** Re-maintains and relayouts the bank after a combo deletion, then refreshes the side panel. Client thread. */
+	private void finishComboDeletion()
+	{
+		if (client.getGameState() == GameState.LOGGED_IN)
+		{
+			maintainAllComboCoreTabs();
+			bankSearch.layoutBank();
+		}
+		if (comboPanel != null)
+		{
+			SwingUtilities.invokeLater(comboPanel::rebuild);
+		}
 	}
 
 	/** Opens the Combo Tags side panel and shows the given combo's editor (the ghost's "Edit" action). */

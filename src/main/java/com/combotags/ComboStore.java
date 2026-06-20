@@ -375,4 +375,19 @@ public final class ComboStore
 			save(configManager, gson, combos);
 		}
 	}
+
+	/** Deletes a category AND every combo filed under it (vs {@link #deleteCategory}, which un-files them). */
+	public static void deleteCategoryAndCombos(ConfigManager configManager, Gson gson, String name)
+	{
+		List<ComboCategory> cats = categories(configManager, gson);
+		if (cats.removeIf(c -> c.name.equals(name)))
+		{
+			saveCategories(configManager, gson, cats);
+		}
+		List<ComboGroup> combos = all(configManager, gson);
+		if (combos.removeIf(g -> name.equals(g.category)))
+		{
+			save(configManager, gson, combos);
+		}
+	}
 }
