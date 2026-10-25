@@ -64,13 +64,16 @@ public class ComboPanel extends PluginPanel
 	// Amber badge tint for the category "shared item" warning (no warning color in ColorScheme).
 	private static final Color WARNING_COLOR = new Color(0xFFB733);
 
-	// Item-search slot filter: labels shown in the dropdown, paired with the ItemIndex filter value.
-	private static final String[] SLOT_FILTER_LABELS = {
-		"Equippable", "Any item", "Head", "Cape", "Amulet", "Weapon",
-		"Body", "Shield", "Legs", "Gloves", "Boots", "Ring", "Ammo"
+	// Item-search type menus: "All Items" narrows by consumable / misc, "Equipment" by slot. Each sub-menu's labels
+	// are paired with the ItemIndex filter value, and its first entry is that type's "all" option.
+	private static final String[] ITEM_TYPES = {"All Items", "Equipment"};
+	private static final String[] ALL_ITEMS_LABELS = {"All Items", "Consumables", "Misc Items"};
+	private static final int[] ALL_ITEMS_VALUES = {ItemIndex.SLOT_ANY, ItemIndex.SLOT_CONSUMABLE, ItemIndex.SLOT_MISC};
+	private static final String[] EQUIPMENT_LABELS = {
+		"All Slots", "Head", "Cape", "Amulet", "Weapon", "Body", "Shield", "Legs", "Gloves", "Boots", "Ring", "Ammo"
 	};
-	private static final int[] SLOT_FILTER_VALUES = {
-		ItemIndex.SLOT_EQUIPPABLE, ItemIndex.SLOT_ANY,
+	private static final int[] EQUIPMENT_VALUES = {
+		ItemIndex.SLOT_EQUIPPABLE,
 		EquipmentInventorySlot.HEAD.getSlotIdx(),
 		EquipmentInventorySlot.CAPE.getSlotIdx(),
 		EquipmentInventorySlot.AMULET.getSlotIdx(),
@@ -97,7 +100,7 @@ public class ComboPanel extends PluginPanel
 	private String searchQuery = "";
 	private List<ItemIndex.Entry> searchResults = new ArrayList<>();
 	private boolean indexBuilding = false;
-	private int searchSlotFilter = ItemIndex.SLOT_EQUIPPABLE; // remembered "Add items" slot filter (default: gear only)
+	private int searchSlotFilter = ItemIndex.SLOT_ANY; // "Add items" type filter (default: All Items / All Items)
 	private Integer expandedBase = null; // member base id whose variant list is expanded, or null
 
 	// Persistent across rebuilds so typed-but-uncommitted text survives a non-search rebuild (drag reorder,
@@ -383,10 +386,14 @@ public class ComboPanel extends PluginPanel
 	 * A ⚠ badge for a category header when two or more of its combos contain the same item, or {@code null}
 	 * when there's no overlap. A contested item can't belong to a single cell, so it is excluded from every
 	 * combo in the group — no cell shows, claims, or highlights it. The tooltip names the affected item(s),
-	 * resolved on the client thread.
+	 * resolved on the client thread. Hidden by the "Shared item warnings" option (the item is left out either way).
 	 */
 	private JLabel buildCategoryConflictWarning(String categoryName, List<ComboGroup> all)
 	{
+		if (!plugin.config.showSharedItemWarnings())
+		{
+			return null;
+		}
 		List<Integer> shared = sharedMemberBases(categoryName, all);
 		if (shared.isEmpty())
 		{
@@ -990,15 +997,15 @@ public class ComboPanel extends PluginPanel
 	}
 
 	/**
-	 * The slot the "Add items" search should default to for a combo: the shared equipment slot of its members
-	 * (so a head-slot combo opens filtered to Head). Falls back to {@link ItemIndex#SLOT_EQUIPPABLE} for an
-	 * empty combo, a mixed-slot combo, or before the index is built. Member-slot lookups are O(1).
+	 * The type filter the "Add items" search should default to for a combo: Equipment / its members' shared slot
+	 * (so a head-slot combo opens filtered to Head). Falls back to {@link ItemIndex#SLOT_ANY} (All Items / All Items)
+	 * for an empty combo, a mixed-slot combo, or before the index is built. Member-slot lookups are O(1).
 	 */
 	private int detectSlotFilter(ComboGroup g)
 	{
 		if (g == null || g.members.isEmpty() || !ItemIndex.isReady())
 		{
-			return ItemIndex.SLOT_EQUIPPABLE;
+			return ItemIndex.SLOT_ANY;
 		}
 		int slot = ItemIndex.NOT_EQUIPPABLE;
 		for (int base : g.members)
@@ -1014,10 +1021,10 @@ public class ComboPanel extends PluginPanel
 			}
 			else if (slot != s)
 			{
-				return ItemIndex.SLOT_EQUIPPABLE; // members span multiple slots → don't narrow
+				return ItemIndex.SLOT_ANY; // members span multiple slots → don't narrow
 			}
 		}
-		return slot == ItemIndex.NOT_EQUIPPABLE ? ItemIndex.SLOT_EQUIPPABLE : slot;
+		return slot == ItemIndex.NOT_EQUIPPABLE ? ItemIndex.SLOT_ANY : slot;
 	}
 
 	// -------------------------------------------------------------- detail view
@@ -1112,7 +1119,7 @@ public class ComboPanel extends PluginPanel
 
 		content.add(Box.createVerticalStrut(6));
 		content.add(sectionLabel("Add items"));
-		content.add(labelled("Slot", buildSlotFilter()));
+		content.add(labelled("Type", buildTypeFilter()));
 		content.add(Box.createVerticalStrut(4));
 		content.add(buildSearchBar());
 		if (indexBuilding)
@@ -1181,28 +1188,60 @@ public class ComboPanel extends PluginPanel
 		return box;
 	}
 
-	/** Dropdown that restricts the item search to an equipment slot (or any equippable / any item). */
-	private JComboBox<String> buildSlotFilter()
+	/**
+	 * The item-type menu and its sub-menu, side by side: All Items (All Items / Consumables / Misc Items) or
+	 * Equipment (All Slots / each slot). Both write {@link #searchSlotFilter}; picking a type starts at its "all"
+	 * option.
+	 */
+	private JPanel buildTypeFilter()
 	{
-		JComboBox<String> box = new JComboBox<>(SLOT_FILTER_LABELS);
-		box.setToolTipText("Restrict the item search to an equipment slot");
-		for (int i = 0; i < SLOT_FILTER_VALUES.length; i++)
-		{
-			if (SLOT_FILTER_VALUES[i] == searchSlotFilter)
+		boolean equipment = isEquipmentFilter(searchSlotFilter);
+		String[] subLabels = equipment ? EQUIPMENT_LABELS : ALL_ITEMS_LABELS;
+		int[] subValues = equipment ? EQUIPMENT_VALUES : ALL_ITEMS_VALUES;
+
+		JComboBox<String> type = new JComboBox<>(ITEM_TYPES);
+		type.setToolTipText("Search all items, or only equipment");
+		type.setSelectedIndex(equipment ? 1 : 0); // set before wiring the listener so it doesn't fire on build
+		type.addActionListener(e -> {
+			boolean toEquipment = type.getSelectedIndex() == 1;
+			if (toEquipment != isEquipmentFilter(searchSlotFilter))
 			{
-				box.setSelectedIndex(i); // set before wiring the listener so it doesn't fire on build
+				searchSlotFilter = toEquipment ? EQUIPMENT_VALUES[0] : ALL_ITEMS_VALUES[0];
+				doSearch(); // re-run the current query, and rebuild so the sub-menu switches
+			}
+		});
+
+		JComboBox<String> sub = new JComboBox<>(subLabels);
+		sub.setToolTipText(equipment ? "Restrict the search to an equipment slot"
+			: "Restrict the search to consumables (eat / drink) or everything else that isn't equipment");
+		for (int i = 0; i < subValues.length; i++)
+		{
+			if (subValues[i] == searchSlotFilter)
+			{
+				sub.setSelectedIndex(i);
 				break;
 			}
 		}
-		box.addActionListener(e -> {
-			int idx = box.getSelectedIndex();
+		sub.addActionListener(e -> {
+			int idx = sub.getSelectedIndex();
 			if (idx >= 0)
 			{
-				searchSlotFilter = SLOT_FILTER_VALUES[idx];
-				doSearch(); // re-run the current query under the new slot
+				searchSlotFilter = subValues[idx];
+				doSearch(); // re-run the current query under the new filter
 			}
 		});
-		return box;
+
+		JPanel row = new JPanel(new GridLayout(1, 2, 4, 0));
+		row.setOpaque(false);
+		row.add(type);
+		row.add(sub);
+		return row;
+	}
+
+	/** Whether a search filter value belongs to the Equipment menu (any equippable item, or one slot). */
+	private static boolean isEquipmentFilter(int filter)
+	{
+		return filter == ItemIndex.SLOT_EQUIPPABLE || filter >= 0;
 	}
 
 	private JPanel buildSearchBar()
@@ -1219,6 +1258,17 @@ public class ComboPanel extends PluginPanel
 		return bar;
 	}
 
+	/** Re-runs the current search after a "Search filters" option changes, so results reflect it at once. EDT. */
+	void refreshSearch()
+	{
+		if (!searchQuery.isEmpty() && ItemIndex.isReady())
+		{
+			searchResults = ItemIndex.search(searchQuery, MAX_SEARCH_RESULTS, searchSlotFilter,
+				ItemFilters.hiddenFlags(plugin.config));
+			rebuild();
+		}
+	}
+
 	/** Runs the item search from the live persistent-field text. Wired to Enter (once) and the Search button. */
 	private void doSearch()
 	{
@@ -1229,9 +1279,10 @@ public class ComboPanel extends PluginPanel
 			rebuild();
 			return;
 		}
+		int hidden = ItemFilters.hiddenFlags(plugin.config);
 		if (ItemIndex.isReady())
 		{
-			searchResults = ItemIndex.search(searchQuery, MAX_SEARCH_RESULTS, searchSlotFilter);
+			searchResults = ItemIndex.search(searchQuery, MAX_SEARCH_RESULTS, searchSlotFilter, hidden);
 			rebuild();
 		}
 		else
@@ -1243,7 +1294,7 @@ public class ComboPanel extends PluginPanel
 			int slotFilter = searchSlotFilter;
 			plugin.clientThread.invokeLater(() -> {
 				ItemIndex.build(plugin.client, plugin.itemManager);
-				List<ItemIndex.Entry> results = ItemIndex.search(searchQuery, MAX_SEARCH_RESULTS, slotFilter);
+				List<ItemIndex.Entry> results = ItemIndex.search(searchQuery, MAX_SEARCH_RESULTS, slotFilter, hidden);
 				SwingUtilities.invokeLater(() -> {
 					indexBuilding = false;
 					searchResults = results;
@@ -1316,9 +1367,29 @@ public class ComboPanel extends PluginPanel
 				rebuild();
 			}
 		});
+		if (variantCount > 1)
+		{
+			// The variants are ordered by dragging them; this puts back the default order (ItemIndex.variants).
+			JMenuItem reset = new JMenuItem("Reset to default order");
+			reset.addActionListener(e -> resetVariantOrder(g.name, baseId));
+			reset.setEnabled(g.variantOrder != null && g.variantOrder.containsKey(baseId));
+			menu.add(reset);
+			menu.addSeparator();
+		}
 		menu.add(remove);
 		row.setComponentPopupMenu(menu);
 		return row;
+	}
+
+	/** Drops a member's dragged variant order, so it follows the default order ({@link ItemIndex#variants}) again. */
+	private void resetVariantOrder(String name, int baseId)
+	{
+		ComboGroup cur = group(name);
+		if (cur != null && cur.variantOrder.remove(baseId) != null)
+		{
+			save(cur);
+		}
+		rebuild();
 	}
 
 	/** An indented row under an expanded member: one variant, draggable to set its resolution priority. */
@@ -1666,8 +1737,8 @@ public class ComboPanel extends PluginPanel
 
 	/**
 	 * Selectable display variants for a member: RuneLite's native variation group PLUS the stat-duplicate
-	 * recolors the search folded into this base (e.g. Sanguine Torva under Torva full helm), restricted to
-	 * equippable versions (so a DT2 ring's non-equippable old base model is hidden). The folded ids only appear
+	 * recolors the search folded into this base (e.g. Sanguine Torva under Torva full helm), restricted to its
+	 * stat-class (so a DT2 ring's non-equippable old base model is hidden). The folded ids only appear
 	 * once the item index has been built (i.e. after a search).
 	 */
 	private List<Integer> variantOptions(int baseId)
