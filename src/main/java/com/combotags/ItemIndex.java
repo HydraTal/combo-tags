@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
@@ -100,6 +101,9 @@ public final class ItemIndex
 	private static volatile Map<Integer, Integer> statBaseClass; // canon id -> stat-class representative base
 	private static volatile Map<Integer, List<Integer>> displayVariants; // base -> its same-stat variation members
 	private static volatile Map<Integer, String> variantNames; // variant id -> display name, for variant ordering
+	// base -> variants(base), filled on first ask. The order can't change once the index is built, and the resolver
+	// asks for it per member on every bank refresh. Set with the index; null (no caching) before it.
+	private static volatile Map<Integer, List<Integer>> sortedVariants;
 
 	// A count in a variant name, either bracketed CHARGES ("Amulet of glory(6)", "Amulet of glory (t4)", "Ring of
 	// wealth (i5)", "Black mask (10) (i)": letter in group 1, count in 2, trailing tags in 3) or a bare DURABILITY
@@ -137,14 +141,24 @@ public final class ItemIndex
 
 			// Exclusions and splits (ItemFilters). The non-equippable-twin rule compares an item's name against every
 			// equippable item's name, so collect those first. Notes, placeholders and worn copies are skipped here:
-			// they canonicalize to the real item, which is what gets judged.
+			// they canonicalize to the real item, which is what gets judged. Every id's name and canonical id are kept
+			// for the later passes: ItemManager caches only a handful of compositions, so asking it again would decode
+			// every item a second time on the client thread.
+			String[] nameById = new String[count]; // null = no composition or a blank name
+			int[] canonById = new int[count];
 			Map<Integer, String> realNames = new HashMap<>();
 			Set<Integer> equippable = new HashSet<>();
 			Set<String> equippableNames = new HashSet<>();
 			for (int id = 0; id < count; id++)
 			{
 				ItemComposition comp = itemManager.getItemComposition(id);
-				if (comp == null || isBlank(comp.getName()) || itemManager.canonicalize(id) != id)
+				if (comp == null || isBlank(comp.getName()))
+				{
+					continue;
+				}
+				nameById[id] = comp.getName();
+				canonById[id] = itemManager.canonicalize(id);
+				if (canonById[id] != id)
 				{
 					continue;
 				}
@@ -181,12 +195,11 @@ public final class ItemIndex
 			Set<Integer> seenGroups = new HashSet<>();
 			for (int id = 0; id < count; id++)
 			{
-				ItemComposition comp = itemManager.getItemComposition(id);
-				if (comp == null || isBlank(comp.getName()))
+				if (nameById[id] == null)
 				{
 					continue;
 				}
-				int canon = itemManager.canonicalize(id);
+				int canon = canonById[id];
 				int group = ItemVariationMapping.map(canon);
 				if (seenGroups.add(group))
 				{
@@ -274,22 +287,22 @@ public final class ItemIndex
 
 			// The display name of every id that can appear as a variant, for variant ordering (VariantSort: an
 			// empty plain-named version, and the shortest name as the tiebreak: "Torva full helm" before "Sanguine
-			// torva full helm"). Read here while the item composition lookup is on the client thread.
+			// torva full helm"), taken from the first pass's names.
 			Map<Integer, String> names = new HashMap<>();
 			for (Map.Entry<Integer, List<Integer>> e : displayVars.entrySet())
 			{
-				putName(itemManager, names, e.getKey());
+				putName(nameById, names, e.getKey());
 				for (int id : e.getValue())
 				{
-					putName(itemManager, names, id);
+					putName(nameById, names, id);
 				}
 			}
 			for (Map.Entry<Integer, List<Integer>> e : folded.entrySet())
 			{
-				putName(itemManager, names, e.getKey());
+				putName(nameById, names, e.getKey());
 				for (int id : e.getValue())
 				{
-					putName(itemManager, names, id);
+					putName(nameById, names, id);
 				}
 			}
 
@@ -336,6 +349,7 @@ public final class ItemIndex
 			statBaseClass = statBaseMap;
 			displayVariants = displayVars;
 			variantNames = names;
+			sortedVariants = new ConcurrentHashMap<>(); // read from the client thread and the panel's Swing thread
 			entries = list; // publish LAST: isReady() flips true only once every other map is set
 		}
 		catch (Throwable t)
@@ -727,7 +741,7 @@ public final class ItemIndex
 	 * Different-stats imbues and split cosmetic versions are their own
 	 * bases, and excluded versions are never variants; a DT2 ring's non-equippable base model is a class (and base)
 	 * of its own, so it never shows among the equippable ring's variants. Falls back to the raw,
-	 * unsorted variation set before the index is built.
+	 * unsorted variation set before the index is built. Once built, the list is cached and unmodifiable.
 	 */
 	public static List<Integer> variants(int base)
 	{
@@ -738,6 +752,12 @@ public final class ItemIndex
 			raw.add(base);
 			raw.addAll(mergedVariants(base));
 			return new ArrayList<>(raw);
+		}
+		Map<Integer, List<Integer>> cache = sortedVariants;
+		List<Integer> hit = cache == null ? null : cache.get(base);
+		if (hit != null)
+		{
+			return hit;
 		}
 		LinkedHashSet<Integer> ids = new LinkedHashSet<>(dv.getOrDefault(base, Collections.emptyList()));
 		// A folded recolor brings its own variants too: Ahrim's hood also offers Echo ahrim's hood 100..0, not just
@@ -751,7 +771,12 @@ public final class ItemIndex
 		{
 			ids.add(base);
 		}
-		return VariantSort.sort(new ArrayList<>(ids));
+		List<Integer> sorted = Collections.unmodifiableList(VariantSort.sort(new ArrayList<>(ids)));
+		if (cache != null)
+		{
+			cache.put(base, sorted);
+		}
+		return sorted;
 	}
 
 	/** Whether a name carries a count: bracketed ("Amulet of glory(4)", "(t4)", "(i5)") or trailing ("Dharok's helm 75"). */
@@ -805,18 +830,13 @@ public final class ItemIndex
 		return false;
 	}
 
-	/** Records {@code id}'s display name (once) for variant ordering. Client thread. */
-	private static void putName(ItemManager itemManager, Map<Integer, String> names, int id)
+	/** Records {@code id}'s display name (once) for variant ordering, from the build's scan of every item. */
+	private static void putName(String[] nameById, Map<Integer, String> names, int id)
 	{
-		if (names.containsKey(id))
+		String name = id >= 0 && id < nameById.length ? nameById[id] : null;
+		if (name != null)
 		{
-			return;
-		}
-		ItemComposition comp = itemManager.getItemComposition(id);
-		String name = comp == null ? null : comp.getName();
-		if (!isBlank(name))
-		{
-			names.put(id, name);
+			names.putIfAbsent(id, name);
 		}
 	}
 

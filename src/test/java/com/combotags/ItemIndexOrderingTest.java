@@ -2,7 +2,9 @@ package com.combotags;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -12,6 +14,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -244,6 +247,40 @@ public class ItemIndexOrderingTest
 		{
 			dvField.set(null, savedDv);
 			foldedField.set(null, savedFolded);
+		}
+	}
+
+	@Test
+	public void builtIndexServesCachedVariants() throws Exception
+	{
+		Map<Integer, List<Integer>> dv = new HashMap<>();
+		dv.put(4708, Arrays.asList(4856, 4857, 4708, 4860));
+		Field dvField = ItemIndex.class.getDeclaredField("displayVariants");
+		Field cacheField = ItemIndex.class.getDeclaredField("sortedVariants");
+		dvField.setAccessible(true);
+		cacheField.setAccessible(true);
+		Object savedDv = dvField.get(null);
+		Object savedCache = cacheField.get(null);
+		try
+		{
+			dvField.set(null, dv);
+			cacheField.set(null, new ConcurrentHashMap<>());
+			List<Integer> first = ItemIndex.variants(4708);
+			assertEquals(Arrays.asList(4708, 4856, 4857, 4860), first);
+			assertSame(first, ItemIndex.variants(4708));
+			try
+			{
+				first.add(0);
+				fail("a cached variant list must not be modifiable");
+			}
+			catch (UnsupportedOperationException expected)
+			{
+			}
+		}
+		finally
+		{
+			dvField.set(null, savedDv);
+			cacheField.set(null, savedCache);
 		}
 	}
 

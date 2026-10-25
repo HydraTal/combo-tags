@@ -109,12 +109,6 @@ public class ComboResolver
 	}
 
 	/**
-	 * The item to leave behind when a combo's cell is removed (on delete): the highest-priority member you have
-	 * in the bank as a real item OR a leftover bank placeholder (returned as the real item id, so it relays as the
-	 * item or its placeholder). Only if NONE of the combo's items are in the bank at all does it fall back to the
-	 * combo's goal — its favorite, else its top member. Returns {@code -1} if the combo is unknown or empty.
-	 */
-	/**
 	 * The variant order to resolve a member by: the user's stored (dragged) order, else the default order
 	 * ({@link ItemIndex#variants}: {@link VariantSort}'s rules), so a cell shows the version those rules prefer among
 	 * the ones you own (your fullest glory, the plain helmet before its recolors). Null only before the index lists
@@ -131,6 +125,12 @@ public class ComboResolver
 		return defaults.isEmpty() ? null : defaults;
 	}
 
+	/**
+	 * The item to leave behind when a combo's cell is removed (on delete): the highest-priority member you have
+	 * in the bank as a real item OR a leftover bank placeholder (returned as the real item id, so it relays as the
+	 * item or its placeholder). Only if NONE of the combo's items are in the bank at all does it fall back to the
+	 * combo's goal — its favorite, else its top member. Returns {@code -1} if the combo is unknown or empty.
+	 */
 	public int resolveRestoreItem(String name)
 	{
 		ComboGroup group = ComboStore.cachedGet(plugin.configManager, plugin.gson, name);
