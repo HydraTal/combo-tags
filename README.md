@@ -47,7 +47,7 @@ Type a name and click **Create**, then **click the combo to open its builder**. 
 
 ![A combo's builder: members in priority order, item search, color, and favorite](images/ComboBuilder-WithFavorite.png)
 
-**Variants are automatic.** Add a single item and the plugin folds in its cosmetic, ornament, and charged variants - add a Scythe of Vitur and the cell shows your Holy or Sanguine one; a Dragon pickaxe shows whichever recolor you own. Expand a member to choose which variant it displays, or to set a preference order.
+**Variants are automatic.** Add a single item and the plugin folds in its cosmetic, ornament, and charged variants - add a Scythe of Vitur and the cell shows your Holy or Sanguine one; a Dragon pickaxe shows whichever recolor you own. When you own several, a default order picks one: the most charges or doses first, the plain item before its recolors and ornaments, broken and uncharged versions last. Expand a member to drag its variants into your own preference order; right-click it and choose **Reset to default order** to go back.
 
 ![Expanding a member to choose and reorder its variants](images/VariationReorder.png)
 

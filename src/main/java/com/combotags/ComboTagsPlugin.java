@@ -50,8 +50,6 @@ import net.runelite.client.plugins.banktags.BankTagsPlugin;
 import net.runelite.client.plugins.banktags.BankTagsService;
 import net.runelite.client.plugins.banktags.TagManager;
 import net.runelite.client.plugins.banktags.tabs.LayoutManager;
-import net.runelite.client.plugins.banktags.tabs.TabInterface;
-import net.runelite.client.plugins.banktags.tabs.TabManager;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.components.colorpicker.ColorPickerManager;
@@ -111,8 +109,6 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 	@Inject public ItemManager itemManager;
 	@Inject public ConfigManager configManager;
 	@Inject public ClientThread clientThread;
-	@Inject public TabInterface tabInterface;
-	@Inject TabManager tabManager;
 	@Inject public TagManager tagManager;
 	@Inject public BankTagsService bankTagsService;
 	@Inject public LayoutManager layoutManager;
@@ -263,7 +259,17 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 					}
 				});
 			}
-			if ("disablePanelTooltips".equals(event.getKey()))
+			if (ComboTagsConfig.SEARCH_FILTER_KEYS.contains(event.getKey()))
+			{
+				SwingUtilities.invokeLater(() ->
+				{
+					if (comboPanel != null)
+					{
+						comboPanel.refreshSearch();
+					}
+				});
+			}
+			if ("disablePanelTooltips".equals(event.getKey()) || "showSharedItemWarnings".equals(event.getKey()))
 			{
 				SwingUtilities.invokeLater(() ->
 				{
@@ -1349,7 +1355,7 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 			List<ComboSlots.Slot> slots = ComboSlots.read(configManager, hostTag);
 			// Use the layout straight from config (coreLayoutFor → loadLayout for non-active tabs) so the
 			// placeholder is written for EVERY host tab that has a layout — not just tabs currently loaded in
-			// the bank UI. isVanillaLayoutEnabled() gates on tabManager (UI state), which is false for tabs the
+			// the bank UI. isVanillaLayoutEnabled() gates on the tab list, which is false for tabs the
 			// user hasn't opened this session, leaving their old ghost (favorite) in place.
 			net.runelite.client.plugins.banktags.tabs.Layout core = coreLayoutFor(hostTag);
 			boolean changed = false;
@@ -1561,7 +1567,7 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 	/** The active bank tag tab name if it's a normal tag tab (not the tab list / an inventory setup), else null. */
 	public String getCurrentComboTag()
 	{
-		String tag = tabInterface.getActiveTag();
+		String tag = bankTagsService.getActiveTag();
 		if (tag == null || tag.isEmpty() || tag.equals("tagtabs") || tag.startsWith("_invsetup_"))
 		{
 			return null;
@@ -1582,7 +1588,17 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 	/** Whether the tab has RuneLite's built-in layout enabled (and the tab still exists). */
 	public boolean isVanillaLayoutEnabled(String tag)
 	{
-		return tag != null && tabManager.find(tag) != null && hasRuneliteLayout(tag);
+		return tag != null && tabExists(tag) && hasRuneliteLayout(tag);
+	}
+
+	/**
+	 * Whether the tag has a tab, from Bank Tags' own tab list in config. Bank Tags only exposes BankTagsService,
+	 * LayoutManager and TagManager to dependents; injecting its internal TabManager fails on RuneLite 1.13+.
+	 */
+	private boolean tabExists(String tag)
+	{
+		String tabs = configManager.getConfiguration(BankTagsPlugin.CONFIG_GROUP, BankTagsPlugin.TAG_TABS_CONFIG);
+		return tabs != null && Text.fromCSV(tabs).contains(Text.standardize(tag));
 	}
 
 	private boolean hasRuneliteLayout(String tag)
@@ -1597,7 +1613,7 @@ public class ComboTagsPlugin extends Plugin implements MouseListener
 		{
 			return true;
 		}
-		if (tabManager.find(tag) == null)
+		if (!tabExists(tag))
 		{
 			return false;
 		}

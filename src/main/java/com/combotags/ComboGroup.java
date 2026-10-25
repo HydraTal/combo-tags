@@ -20,7 +20,8 @@ public class ComboGroup
 	public String category = "";                         // optional category/group name this combo belongs to
 	// base id -> that member's variant ids in priority order. The TOP entry is the variant this combo "serves"
 	// (shown in the panel/ghost/icon); during resolution the highest-priority OWNED variant wins (lets you
-	// prefer a specific recolor/version when you hold several). Empty = default order (functional item first).
+	// prefer a specific recolor/version when you hold several). Set by dragging the variants, or by adding a specific
+	// version; absent = the default order (ItemIndex.variants, VariantSort's rules).
 	public Map<Integer, List<Integer>> variantOrder = new HashMap<>();
 	public int icon = 0;                                 // favorite display item id (0 = use the top member)
 	public boolean hideHighlight = false;                // true = don't draw the bank overlay highlight for this combo's cell
@@ -65,7 +66,7 @@ public class ComboGroup
 		{
 			return order.get(0);
 		}
-		List<Integer> opts = ItemIndex.variants(base); // equippable variants in default order
+		List<Integer> opts = ItemIndex.variants(base); // variants in default order
 		return opts.isEmpty() ? base : opts.get(0);
 	}
 

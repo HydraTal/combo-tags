@@ -80,7 +80,7 @@ public class ComboResolver
 			}
 			// If the user gave this member a variant priority order, the highest-priority OWNED variant wins
 			// (variant-level match, so a specific recolor/version is preferred when several are held).
-			List<Integer> order = group.variantOrder == null ? null : group.variantOrder.get(base);
+			List<Integer> order = priorityOrder(group, base);
 			if (order != null)
 			{
 				for (Integer variant : order)
@@ -114,6 +114,23 @@ public class ComboResolver
 	 * item or its placeholder). Only if NONE of the combo's items are in the bank at all does it fall back to the
 	 * combo's goal — its favorite, else its top member. Returns {@code -1} if the combo is unknown or empty.
 	 */
+	/**
+	 * The variant order to resolve a member by: the user's stored (dragged) order, else the default order
+	 * ({@link ItemIndex#variants}: {@link VariantSort}'s rules), so a cell shows the version those rules prefer among
+	 * the ones you own (your fullest glory, the plain helmet before its recolors). Null only before the index lists
+	 * the member, meaning "any owned variant".
+	 */
+	private static List<Integer> priorityOrder(ComboGroup group, int base)
+	{
+		List<Integer> stored = group.variantOrder == null ? null : group.variantOrder.get(base);
+		if (stored != null)
+		{
+			return stored;
+		}
+		List<Integer> defaults = ItemIndex.variants(base);
+		return defaults.isEmpty() ? null : defaults;
+	}
+
 	public int resolveRestoreItem(String name)
 	{
 		ComboGroup group = ComboStore.cachedGet(plugin.configManager, plugin.gson, name);
@@ -125,7 +142,7 @@ public class ComboResolver
 		Map<Integer, Integer> byVariant = bankItemsByVariantPresent();
 		for (Integer base : group.members)
 		{
-			List<Integer> order = group.variantOrder == null ? null : group.variantOrder.get(base);
+			List<Integer> order = priorityOrder(group, base);
 			if (order != null)
 			{
 				for (Integer variant : order)
