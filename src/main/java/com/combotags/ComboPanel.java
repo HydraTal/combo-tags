@@ -981,7 +981,7 @@ public class ComboPanel extends PluginPanel
 		rebuild();
 		if (!ItemIndex.isReady())
 		{
-			// Slot detection needs the item index; if it isn't built yet, build it off-thread then refine the
+			// Slot detection needs the item index; if it isn't built yet, build it on the client thread then refine the
 			// default (and re-render) — but only if we're still on this same combo.
 			plugin.clientThread.invokeLater(() -> {
 				ItemIndex.build(plugin.client, plugin.itemManager);
